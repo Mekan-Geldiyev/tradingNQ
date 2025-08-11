@@ -1,0 +1,128 @@
+//@version=5
+strategy("MNQ True 15m ORB + First Retest Close Entry (Locked 9:30–9:45 Candle)", overlay=true,
+     default_qty_type=strategy.fixed, default_qty_value=1)
+
+// === INPUTS ===
+startDate = input.time(timestamp("2025-07-26 00:00 -0700"), "Start Date")
+endDate   = input.time(timestamp("2025-08-30 23:59 -0700"), "End Date")
+tpPoints  = input.int(40, "Take Profit (pts)")
+slPoints  = input.int(25, "Stop Loss (pts)")
+retestMargin = input.float(1.0, "Retest Margin (pts)", step=0.25)
+
+shorttpPoints  = input.int(25, "Take Profit Short (pts)")
+shortslPoints  = input.int(25, "Stop Loss Short (pts)")
+rsiCutoff = input.int(30, "Min RSI to allow Short Entry")
+emaBufferPoints = input.int(3, "TP Buffer below EMA9 for RSI Longs")
+
+// === TIME FILTERS ===
+inDateRange = (time >= startDate and time <= endDate)
+nyTime = timestamp("America/New_York", year, month, dayofmonth, hour, minute)
+marketOpenNY = timestamp("America/New_York", year, month, dayofmonth, 9, 30)
+marketOpenEndNY = timestamp("America/New_York", year, month, dayofmonth, 9, 45)
+marketCloseNY = timestamp("America/New_York", year, month, dayofmonth, 16, 0)
+retestEndNY = timestamp("America/New_York", year, month, dayofmonth, 11, 30)
+
+allowEntry = nyTime >= marketOpenEndNY
+inSession = nyTime >= marketOpenNY and nyTime <= marketCloseNY
+inRetestWindow = nyTime >= marketOpenEndNY and nyTime <= retestEndNY
+
+// === TRUE 15m OPENING RANGE ===
+[high15, low15, time15] = request.security(syminfo.tickerid, "15", [high, low, time])
+var float rangeHigh = na
+var float rangeLow = na
+if (not na(time15) and time15 == marketOpenNY)
+    rangeHigh := high15
+    rangeLow := low15
+
+// === DAILY RESET ===
+var bool breakoutConfirmed = false
+var bool waitingForRetest = false
+var bool enteredToday = false
+var int breakoutBarCount = 0
+var bool shortBreakdownTaken = false
+
+newDay = ta.change(time("D"))
+if newDay
+    breakoutConfirmed := false
+    waitingForRetest := false
+    enteredToday := false
+    rangeHigh := na
+    rangeLow := na
+    breakoutBarCount := 0
+    shortBreakdownTaken := false
+
+// === STEP 1: Confirm breakout
+if not breakoutConfirmed and allowEntry and not na(rangeHigh) and close > rangeHigh
+    breakoutConfirmed := true
+    waitingForRetest := true
+    breakoutBarCount := 0
+
+// === COUNT 5m bars since breakout
+if waitingForRetest
+    breakoutBarCount += 1
+    if breakoutBarCount > 3
+        waitingForRetest := false
+        breakoutConfirmed := false
+
+// === STEP 2: First retest candle closes within margin
+retestClose = waitingForRetest and not enteredToday and
+              low <= (rangeHigh + retestMargin) and 
+              high >= rangeHigh and 
+              inRetestWindow
+
+// === 1m RSI + 5m EMA9 ===
+rsi1m = request.security(syminfo.tickerid, "1", ta.rsi(close, 14))
+[low1m, close1m, time1m] = request.security(syminfo.tickerid, "1", [low, close, time])
+ema9_5m = request.security(syminfo.tickerid, "5", ta.ema(close, 9))
+barsAfter945 = math.floor((nyTime - marketOpenEndNY) / 60000)
+
+// === SHORT ENTRY ===
+shortBreakdown = not shortBreakdownTaken and not enteredToday and 
+                 barsAfter945 >= 0 and barsAfter945 <= 3 and
+                 close1m < rangeLow and
+                 rsi1m > rsiCutoff and
+                 inSession and inDateRange
+
+if shortBreakdown
+    strategy.entry("Short", strategy.short, comment="15m Low Breakdown ⬇️")
+    enteredToday := true
+    shortBreakdownTaken := true
+
+// === LONG ENTRY: 15m Retest ===
+if retestClose and inSession and inDateRange
+    strategy.entry("Long", strategy.long, comment="First Retest Close ✅")
+    enteredToday := true
+    waitingForRetest := false
+    breakoutConfirmed := false
+
+// === MULTIPLE RSI LONG ENTRIES ===
+rsi24Long = ta.crossover(rsi1m, 24) and inSession and inDateRange and not na(rangeHigh)
+rsi18Long = ta.crossover(rsi1m, 18) and inSession and inDateRange and not na(rangeHigh)
+rsi10Long = ta.crossover(rsi1m, 10) and inSession and inDateRange and not na(rangeHigh)
+
+if rsi24Long
+    strategy.entry("RSI 24 Long", strategy.long, comment="RSI < 24 Long 📈")
+
+if rsi18Long
+    strategy.entry("RSI 18 Long", strategy.long, comment="RSI < 18 Long 📈")
+
+if rsi10Long
+    strategy.entry("RSI 10 Long", strategy.long, comment="RSI < 10 Long 📈")
+
+// === EXITS ===
+entryPrice = strategy.position_avg_price
+
+// Main long
+strategy.exit("TP/SL", from_entry="Long", limit=entryPrice + tpPoints, stop=entryPrice - slPoints)
+// Short
+strategy.exit("TP/SL Short", from_entry="Short", limit=entryPrice - shorttpPoints, stop=entryPrice + shortslPoints)
+
+// RSI longs TP below EMA9
+rsiTP = ema9_5m - emaBufferPoints
+strategy.exit("TP/SL RSI 24", from_entry="RSI 24 Long", limit=rsiTP, stop=entryPrice - 25)
+strategy.exit("TP/SL RSI 18", from_entry="RSI 18 Long", limit=rsiTP, stop=entryPrice - 25)
+strategy.exit("TP/SL RSI 10", from_entry="RSI 10 Long", limit=rsiTP, stop=entryPrice - 25)
+
+// === PLOT RANGE ===
+plot(rangeHigh, title="Locked 15m High", color=color.green, style=plot.style_linebr)
+plot(rangeLow, title="Locked 15m Low", color=color.red, style=plot.style_linebr)
