@@ -1,0 +1,42 @@
+//@version=5
+strategy("15m Low Breakdown - First 15s Close Below", overlay=true, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// === INPUTS ===
+shorttpPoints  = input.int(25, "Take Profit Short (pts)")
+shortslPoints  = input.int(25, "Stop Loss Short (pts)")
+
+// === TIME SETUP ===
+// Lock 15m range from 6:30–6:45 AM PT = 9:30–9:45 AM ET
+lockCandleTime = timestamp("America/New_York", year, month, dayofmonth, 9, 30)
+
+// === GET 15M CANDLE HIGH/LOW AT 9:30 ET ===
+[high15, low15, time15] = request.security(syminfo.tickerid, "15", [high, low, time])
+var float rangeHigh = na
+var float rangeLow = na
+if (not na(time15) and time15 == lockCandleTime)
+    rangeHigh := high15
+    rangeLow := low15
+
+// === DAILY RESET ===
+var bool enteredToday = false
+newDay = ta.change(time("D"))
+if newDay
+    enteredToday := false
+    rangeHigh := na
+    rangeLow := na
+
+// === 15-SECOND CLOSE BELOW 15m LOW ===
+close15s = request.security(syminfo.tickerid, "15S", close)
+triggerShort = not enteredToday and not na(rangeLow) and close15s < rangeLow
+
+if triggerShort
+    strategy.entry("Short 15s Close", strategy.short, comment="15s Close < 15m Low")
+    enteredToday := true
+
+// === EXIT ===
+entryPrice = strategy.position_avg_price
+strategy.exit("TP/SL", from_entry="Short 15s Close", limit=entryPrice - shorttpPoints, stop=entryPrice + shortslPoints)
+
+// === PLOT RANGE ===
+plot(rangeHigh, title="15m High (6:30–6:45 PT)", color=color.purple, style=plot.style_linebr)
+plot(rangeLow, title="15m Low (6:30–6:45 PT)", color=color.blue, style=plot.style_linebr)
