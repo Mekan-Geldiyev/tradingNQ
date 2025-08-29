@@ -1,0 +1,54 @@
+//@version=5
+strategy("SMT Divergence Strategy - One Shot (1m)", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// === INPUTS ===
+startHour = input.int(9, "Start Hour (EST)", minval=0)
+startMinute = input.int(45, "Start Minute", minval=0)
+endHour = input.int(11, "End Hour (EST)", minval=0)
+endMinute = input.int(30, "End Minute", minval=0)
+tpPoints = input.int(20, "Take Profit (points)")
+slPoints = input.int(20, "Stop Loss (points)")
+pivotLength = input.int(3, "Pivot Lookback", minval=1)
+
+// === TIME FILTER ===
+estTime = timestamp("America/New_York", year, month, dayofmonth, hour, minute)
+sessionStart = timestamp("America/New_York", year, month, dayofmonth, startHour, startMinute)
+sessionEnd = timestamp("America/New_York", year, month, dayofmonth, endHour, endMinute)
+inSession = estTime >= sessionStart and estTime <= sessionEnd
+
+// === LOCAL PIVOTS ===
+ph = ta.pivothigh(high, pivotLength, pivotLength)
+pl = ta.pivotlow(low, pivotLength, pivotLength)
+
+// === ES COMPARISON PIVOTS ===
+[hES, lES] = request.security("CME_MINI_DL:ES1!", timeframe.period, [high, low])
+sym_ph = ta.pivothigh(hES, pivotLength, pivotLength)
+sym_pl = ta.pivotlow(lES, pivotLength, pivotLength)
+
+// === SMT SIGNALS ===
+bearSignal = not na(ph) and na(sym_ph)  // RED - SHORT
+bullSignal = not na(pl) and na(sym_pl)  // BLUE - LONG
+
+// === STATE TRACKING ===
+var bool canEnter = true
+var int lastTradeBar = na
+
+// === ENTRY LOGIC ===
+if inSession and canEnter and bullSignal
+    strategy.entry("LONG SMT", strategy.long)
+    lastTradeBar := bar_index
+    canEnter := false
+
+if inSession and canEnter and bearSignal
+    strategy.entry("SHORT SMT", strategy.short)
+    lastTradeBar := bar_index
+    canEnter := false
+
+// === RESET ENTRY AFTER POSITION CLOSED ===
+if not strategy.position_size and bar_index > lastTradeBar
+    canEnter := true
+
+// === EXITS ===
+entryPrice = strategy.position_avg_price
+strategy.exit("TP/SL Long", from_entry="LONG SMT", limit=entryPrice + tpPoints, stop=entryPrice - slPoints)
+strategy.exit("TP/SL Short", from_entry="SHORT SMT", limit=entryPrice - tpPoints, stop=entryPrice + slPoints)
