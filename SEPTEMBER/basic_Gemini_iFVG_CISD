@@ -1,0 +1,94 @@
+//@version=5
+strategy("iFVG + CISD NY Session Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// ─────────────── INPUTS ───────────────
+tf          = input.timeframe("5", "Entry Timeframe")
+rr          = input.float(1.0, "Risk/Reward", step=0.1)
+stopPoints  = input.int(140, "Stop Loss (points)")
+targetPoints= input.int(160, "Take Profit (points)")
+useLongs    = input.bool(true, "Enable Longs")
+useShorts   = input.bool(true, "Enable Shorts")
+showFVG     = input.bool(true, "Show FVG Boxes?")
+showCISD    = input.bool(true, "Show CISD Lines?")
+lookback    = input.int(20, "FVG Lookback (bars)", minval=3)
+
+// ─────────────── TIMEZONE & SESSION FILTER ───────────────
+// Corrected to 9:35 AM - 11:00 AM EST
+inSession = time(timeframe.period, "0935-1100", "America/New_York")
+
+// ─────────────── TRADE STATE MANAGEMENT ───────────────
+var bool  tradeTakenToday = false
+var float pendingCisdLevel = na
+var int   pendingDirection = 0 // 1 for long, -1 for short, 0 for none
+
+// Reset trade state at the start of a new day
+isNewDay = dayofmonth != dayofmonth[1]
+if isNewDay
+    tradeTakenToday := false
+    pendingCisdLevel := na
+    pendingDirection := 0
+
+// ─────────────── FVG & CISD DETECTION ───────────────
+// We only look for a new setup if no trade has been taken today
+if not tradeTakenToday
+    // Find most recent valid FVG
+    var float fvgHigh = na
+    var float fvgLow = na
+    
+    // Look for a bullish FVG
+    isBullishFvg = false
+    for i = 3 to lookback
+        if low[i] > high[i+2]
+            fvgHigh := low[i]
+            fvgLow := high[i+2]
+            isBullishFvg := true
+            break
+            
+    // Look for a bearish FVG
+    isBearishFvg = false
+    for i = 3 to lookback
+        if high[i] < low[i+2]
+            fvgHigh := high[i]
+            fvgLow := low[i+2]
+            isBearishFvg := true
+            break
+
+    // Check for inversion and set pending trade state
+    if isBearishFvg and close[1] < fvgHigh and useShorts and inSession and na(pendingCisdLevel)
+        // Bearish FVG inverted, set up for a short entry on the next candle
+        pendingCisdLevel := math.min(open[1], close[1])
+        pendingDirection := -1
+    else if isBullishFvg and close[1] > fvgLow and useLongs and inSession and na(pendingCisdLevel)
+        // Bullish FVG inverted, set up for a long entry on the next candle
+        pendingCisdLevel := math.max(open[1], close[1])
+        pendingDirection := 1
+
+// ─────────────── TRADE EXECUTION ───────────────
+// Long Entry: Check if a long is pending and if the current candle closes above the CISD
+if pendingDirection == 1 and close > pendingCisdLevel
+    if useLongs
+        strategy.entry("Long", strategy.long, comment="iFVG Long")
+        longEntry = close
+        longStop = longEntry - stopPoints * syminfo.mintick
+        longTarget = longEntry + targetPoints * syminfo.mintick
+        strategy.exit("TP/SL Long", from_entry="Long", stop=longStop, limit=longTarget)
+        tradeTakenToday := true
+        pendingCisdLevel := na
+        pendingDirection := 0
+        
+// Short Entry: Check if a short is pending and if the current candle closes below the CISD
+if pendingDirection == -1 and close < pendingCisdLevel
+    if useShorts
+        strategy.entry("Short", strategy.short, comment="iFVG Short")
+        shortEntry = close
+        shortStop = shortEntry + stopPoints * syminfo.mintick
+        shortTarget = shortEntry - targetPoints * syminfo.mintick
+        strategy.exit("TP/SL Short", from_entry="Short", stop=shortStop, limit=shortTarget)
+        tradeTakenToday := true
+        pendingCisdLevel := na
+        pendingDirection := 0
+
+// ─────────────── VISUALS ───────────────
+// Draw CISD line when a trade is pending
+if not na(pendingCisdLevel)
+    line.new(bar_index-1, pendingCisdLevel, bar_index, pendingCisdLevel, extend=extend.right, color=pendingDirection == 1 ? color.blue : color.orange, width=2)
