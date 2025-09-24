@@ -1,0 +1,105 @@
+//@version=5
+strategy("iFVG + CISD NY Session Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// ─────────────── INPUTS ───────────────
+tf          = input.timeframe("5", "Entry Timeframe")
+rr          = input.float(1.0, "Risk/Reward", step=0.1)
+stopBuffer  = input.int(10, "Stop Buffer (points)")
+contractSize = input.float(1.0, "Contract Size (Micro)", minval=0.1)
+useLongs    = input.bool(true, "Enable Longs")
+useShorts   = input.bool(true, "Enable Shorts")
+showFVG     = input.bool(true, "Show FVG Boxes?")
+showCISD    = input.bool(true, "Show CISD Lines?")
+
+
+// ─────────────── SOURCE DATA ───────────────
+open_tf     = request.security(syminfo.tickerid, tf, open)
+high_tf     = request.security(syminfo.tickerid, tf, high)
+low_tf      = request.security(syminfo.tickerid, tf, low)
+close_tf    = request.security(syminfo.tickerid, tf, close)
+
+// ─────────────── SESSIONS ───────────────
+// Trade session for entries (9:30 AM – 12:00 PM EST)
+inTradeSession = time(timeframe.period, "0930-1200", "America/New_York")
+// CISD visualization session (8:00 AM EST onwards)
+inCisdVisualSession = time(timeframe.period, "0800-1200", "America/New_York")
+
+// ─────────────── FVG DETECTION & INVERSION LOGIC ───────────────
+bullishFVG = low_tf[1] > high_tf[3]
+bearishFVG = high_tf[1] < low_tf[3]
+
+// Store FVG levels when they form
+var float lastBullishFvgLow = na
+var float lastBearishFvgHigh = na
+
+if bullishFVG
+    lastBullishFvgLow := low_tf[1]
+    
+if bearishFVG
+    lastBearishFvgHigh := high_tf[1]
+
+// Check for FVG inversion
+bullishFvgInverted = close_tf < lastBullishFvgLow
+bearishFvgInverted = close_tf > lastBearishFvgHigh
+
+// ─────────────── CISD ZONES ───────────────
+var float cisdLongLevel = na
+var float cisdShortLevel = na
+
+// Bullish CISD: first green candle in a sequence
+isBullishCandle = close_tf > open_tf
+isBullishSeriesStart = isBullishCandle and isBullishCandle[1] and not isBullishCandle[2]
+if isBullishSeriesStart
+    cisdLongLevel := math.min(open_tf[1], close_tf[1])
+
+// Bearish CISD: first red candle in a sequence
+isBearishCandle = close_tf < open_tf
+isBearishSeriesStart = isBearishCandle and isBearishCandle[1] and not isBearishCandle[2]
+if isBearishSeriesStart
+    cisdShortLevel := math.max(open_tf[1], close_tf[1])
+
+// ─────────────── TRADES ───────────────
+// Allow up to 2 trades per day
+var int tradesTakenToday = 0
+
+isNewDay = dayofmonth != dayofmonth[1]
+if isNewDay
+    tradesTakenToday := 0 // Reset the trade counter at the start of each day
+
+if inTradeSession and tradesTakenToday < 2
+    // Short Entry: Invert Bullish FVG and close below a Bearish CISD
+    if bullishFvgInverted and close_tf < cisdShortLevel and useShorts
+        entry = close_tf
+        stop  = high_tf[1] + stopBuffer
+        target = entry - (stop - entry) * rr
+
+        strategy.entry("Short", strategy.short, qty=contractSize, comment="iFVG Short")
+        strategy.exit("TP/SL", "Short", stop=stop, limit=target)
+        tradesTakenToday := tradesTakenToday + 1
+        
+    // Long Entry: Invert Bearish FVG and close above a Bullish CISD
+    if bearishFvgInverted and close_tf > cisdLongLevel and useLongs
+        entry = close_tf
+        stop  = low_tf[1] - stopBuffer
+        target = entry + (entry - stop) * rr
+
+        strategy.entry("Long", strategy.long, qty = contractSize, comment="iFVG Long")
+        strategy.exit("TP/SL", "Long", stop=stop, limit=target)
+        tradesTakenToday := tradesTakenToday + 1
+
+
+// ─────────────── VISUALIZATION ───────────────
+// FVG BOXES
+if showFVG and bullishFVG
+    box.new(bar_index-3, high_tf[3], bar_index-1, low_tf[1], border_color=color.new(color.green, 0), bgcolor=color.new(color.green, 85))
+if showFVG and bearishFVG
+    box.new(bar_index-3, high_tf[1], bar_index-1, low_tf[3], border_color=color.new(color.red, 0), bgcolor=color.new(color.red, 85))
+
+// CISD LINES
+if showCISD and inCisdVisualSession
+    // Draw Bullish CISD line
+    if isBullishSeriesStart
+        line.new(bar_index-1, cisdLongLevel, bar_index, cisdLongLevel, color=color.blue, width=2)
+    // Draw Bearish CISD line
+    if isBearishSeriesStart
+        line.new(bar_index-1, cisdShortLevel, bar_index, cisdShortLevel, color=color.orange, width=2)
